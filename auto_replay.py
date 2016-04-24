@@ -4,6 +4,7 @@ import requests
 import codecs
 
 req = requests.Session()
+target_user = [u'GreatYYX大帅哥', u'老婆大人']
 
 def auto_replay(content):
     def _xiaodoubi(content):
@@ -20,7 +21,7 @@ def auto_replay(content):
     def _stupid(content):
         return 'I don\'t know [Frown]'
 
-    return _xiaodoubi(content)
+    return _xiaodoubi(content) + '\n[Wechat Bot]'
 
 def sync_handler(wx, data):
     for msg in data['AddMsgList']:
@@ -31,7 +32,7 @@ def sync_handler(wx, data):
             msg_content = msg['Content'].replace('&lt;', '<').replace('&gt;', '>')
             msg_time = msg['CreateTime']
 
-            if from_user == wx.get_user_id(u'GreatYYX大帅哥'):
+            if from_user in target_user:
                 reply = auto_replay(msg_content)
                 wx.send_message(from_user, reply)
 
@@ -45,6 +46,7 @@ if __name__ == '__main__':
             pass
         if not wx.init():
             raise Exception('wxinit')
+        target_user = map(wx.get_user_id, target_user)
         wx.start_heartbeat_loop()
 
     except Exception as e:

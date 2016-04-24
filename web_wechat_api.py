@@ -286,7 +286,7 @@ class WebWechatApi():
             selector = self._sync_check()
             if selector != '0':
                 data = self._sync()
-                if not self._sync():
+                if not data:
                     print_msg('ERROR', 'heartbeat thread sync')
 
                 if selector == '2': # new message
@@ -301,14 +301,15 @@ class WebWechatApi():
     def _sync_check(self):
         print_msg('DEBUG', 'heartbeat syncheck')
         url = self.push_uri + '/synccheck'
+        curr_time = int(time.time())
         params = {
             'skey': self.base_request['Skey'],
             'sid': self.base_request['Sid'],
             'uin': self.base_request['Uin'],
             'deviceId': self.base_request['DeviceID'],
             'synckey': self._sync_key_str(),
-            'r': int(time.time()),
-            '_': int(time.time()),
+            'r': curr_time,
+            '_': curr_time,
         }
 
         data = self._get(url = url, params = params).text
