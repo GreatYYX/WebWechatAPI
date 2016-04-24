@@ -2,5 +2,6 @@
 *.jpg
 *.json
 test/
+test.py
 tmp/*
 !tmp/.gitignore

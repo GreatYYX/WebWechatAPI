@@ -20,7 +20,7 @@ DEBUG = True
 TEMP_PATH = os.path.join(os.getcwd(), 'tmp')
 QR_IMAGE_PATH = os.path.join(TEMP_PATH, 'qrcode.jpg')
 DEVICE_ID = 'e000000000000000'
-HEARTBEAT_FREQENCY = 10
+HEARTBEAT_FREQENCY = 0.1 # minimum gap between two heartbeat packet
 # map of push_uri and base_uri
 MAP_URI = (
     ('wx2.qq.com', 'webpush2.weixin.qq.com'),
@@ -76,6 +76,7 @@ class WebWechatApi():
     push_uri = ''
     user_info = {}
     sync_key = {}
+    cookies = None
 
     member_list = []
     contact_list = []
@@ -95,15 +96,17 @@ class WebWechatApi():
         headers = {'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.125 Safari/537.36'}
         self.requests = requests.Session()
         self.requests.headers.update(headers)
+        self.requests.mount('http://', requests.adapters.HTTPAdapter(max_retries = 5))
+        self.requests.mount('https://', requests.adapters.HTTPAdapter(max_retries = 5))
 
-    def _get(self, url, params = None):
-        r = self.requests.get(url = url, params = params)
+    def _get(self, url, params = None, headers = None):
+        r = self.requests.get(url = url, params = params, headers = headers, cookies = self.cookies)
         r.encoding = 'utf-8'
         return r
 
-    def _post(self, url, data = None, json = False):
+    def _post(self, url, data = None, headers = None, json = False):
         headers = {'content-type': 'application/json; charset=UTF-8'} if json else {}
-        r = self.requests.post(url = url, data = data, headers = {})
+        r = self.requests.post(url = url, data = data, headers = headers, cookies = self.cookies)
         r.encoding = 'utf-8'
         return r
 
@@ -162,7 +165,8 @@ class WebWechatApi():
                     self.push_uri = 'https://%s/cgi-bin/mmwebwx-bin' % p
                     break
 
-            data = self._get(url = redirect_uri).text
+            r = self._get(url = redirect_uri)
+            data = r.text
             print_msg('DEBUG', data)
 
             doc = xml.dom.minidom.parseString(data)
@@ -187,6 +191,10 @@ class WebWechatApi():
                 'Skey': skey,
                 'DeviceID': DEVICE_ID,
             }
+            self.cookies = r.cookies
+
+            print_msg('DEBUG', 'Cookie:')
+            print r.cookies
 
             # close QR image and remove
             pass
@@ -201,9 +209,9 @@ class WebWechatApi():
     def response_state(self, func, base_response):
         err_msg = base_response['ErrMsg']
         ret = base_response['Ret']
-        if ret == '1101':
+        if ret == '1101' or ret == '1100':
             print_msg('INFO', 'logout')
-            exit(1)
+            os._exit(1)
         if ret != 0:
             printf_msg('ERROR', 'Func: %s, Ret: %d, ErrMsg: %s', (func, ret, err_msg))
         elif DEBUG:
@@ -224,15 +232,29 @@ class WebWechatApi():
             return False
 
         if DEBUG:
-            with open(os.path.join(TEMP_PATH, 'webwxinit.json'), 'wb') as f:
-                f.write(r.content)
-            f.close()
+            write_to_file('webwxinit.json', r.content)
 
         # self.contact_list = data['ContactList']
         self.user_info = data['User']
         self.sync_key = data['SyncKey']
 
+        # self._status_notify()
+
         return self._init_contact()
+
+    def _status_notify(self):
+        url = '%s/webwxstatusnotify?&pass_ticket=%s' % (self.base_uri, self.pass_ticket)
+        params = {
+            'BaseRequest': self.base_request,
+            "Code": 3,
+            "FromUserName": self.user_info['UserName'],
+            "ToUserName": self.user_info['UserName'],
+            "ClientMsgId": int(time.time())
+        }
+        data = self._post(url, params, json = True).json()
+        print data
+
+        return self.response_state('webwxstatusnotify', data['BaseResponse'])
 
     def _init_contact(self):
         url = '%s/webwxgetcontact?pass_ticket=%s&skey=%s&r=%s' % (
@@ -283,6 +305,7 @@ class WebWechatApi():
 
     def _heartbeat_thread(self):
         while True:
+            last_check_time = time.time()
             selector = self._sync_check()
             if selector != '0':
                 data = self._sync()
@@ -293,13 +316,14 @@ class WebWechatApi():
                     for callback in self.sync_listener:
                         callback(self, data)
 
-            time.sleep(HEARTBEAT_FREQENCY)
+            if time.time() - last_check_time <= HEARTBEAT_FREQENCY:
+                time.sleep(time.time() + HEARTBEAT_FREQENCY - last_check_time)
 
     def _sync_key_str(self):
         return '|'.join(['%s_%s' % (item['Key'], item['Val']) for item in self.sync_key['List']])
 
     def _sync_check(self):
-        print_msg('DEBUG', 'heartbeat syncheck')
+        check_start_time = time.time()
         url = self.push_uri + '/synccheck'
         curr_time = int(time.time())
         params = {
@@ -311,8 +335,10 @@ class WebWechatApi():
             'r': curr_time,
             '_': curr_time,
         }
+        headers = {'Connection': 'Keep-Alive'} # long polling
 
-        data = self._get(url = url, params = params).text
+        data = self._get(url = url, params = params, headers = headers).text
+        printf_msg('DEBUG', 'heartbeat syncheck %ds', round(time.time() - check_start_time, 2))
 
         # response format
         # window.synccheck={retcode:"0", selector:"2"}
@@ -322,7 +348,7 @@ class WebWechatApi():
 
         if retcode != '0':
             print_msg('INFO', 'logout')
-            exit(1)
+            os._exit(1)
 
         return selector
 
@@ -401,8 +427,7 @@ class WebWechatApi():
             }
             data = self._get(url = url, params = params).content
 
-            with open(QR_IMAGE_PATH, 'wb') as f:
-                f.write(data)
+            self.write_to_file(QR_IMAGE_PATH, data)
             time.sleep(1)
 
             if sys.platform.find('darwin') >= 0: subprocess.call(('open', QR_IMAGE_PATH))
