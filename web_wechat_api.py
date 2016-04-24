@@ -1,5 +1,5 @@
 #!/usr/bin/env python2
-# -*- coding: UTF-8 -*-     
+# -*- coding: UTF-8 -*-
 
 import ssl
 import os
@@ -17,10 +17,10 @@ import random
 
 # Constants
 DEBUG = True
-TEMP_PATH = os.getcwd()
+TEMP_PATH = os.path.join(os.getcwd(), 'tmp')
 QR_IMAGE_PATH = os.path.join(TEMP_PATH, 'qrcode.jpg')
 DEVICE_ID = 'e000000000000000'
-HEARTBEAT_FREQENCY = 20
+HEARTBEAT_FREQENCY = 10
 # map of push_uri and base_uri
 MAP_URI = (
     ('wx2.qq.com', 'webpush2.weixin.qq.com'),
@@ -201,6 +201,9 @@ class WebWechatApi():
     def response_state(self, func, base_response):
         err_msg = base_response['ErrMsg']
         ret = base_response['Ret']
+        if ret == '1101':
+            print_msg('INFO', 'logout')
+            exit(1)
         if ret != 0:
             printf_msg('ERROR', 'Func: %s, Ret: %d, ErrMsg: %s', (func, ret, err_msg))
         elif DEBUG:
@@ -264,7 +267,7 @@ class WebWechatApi():
 
         if DEBUG:
             write_to_file('webwxgetcontact_contact.json', json.dumps(self.contact_list, indent = 4))
-            write_to_file('webwxgetcontact_group', json.dumps(self.group_list, indent = 4))
+            write_to_file('webwxgetcontact_group.json', json.dumps(self.group_list, indent = 4))
             write_to_file('webwxgetcontact_special.json', json.dumps(self.special_user_list, indent = 4))
             write_to_file('webwxgetcontact_public.json', json.dumps(self.public_user_list, indent = 4))
 
@@ -275,8 +278,8 @@ class WebWechatApi():
 
     def start_heartbeat_loop(self):
         self.heartbeat_thread_handler = threading.Thread(target = self._heartbeat_thread)
+        print_msg('DEBUG', 'heartbeat loop start...')
         self.heartbeat_thread_handler.start()
-        print_msg('DEBUG', 'heartbeat loop started')
 
     def _heartbeat_thread(self):
         while True:
@@ -375,6 +378,7 @@ class WebWechatApi():
             'uin': self.base_request['Uin']
         }
         self._post(url = url, data = params)
+        print_msg('INFO', 'logout')
 
 
     #############
@@ -402,11 +406,10 @@ class WebWechatApi():
 
             if sys.platform.find('darwin') >= 0: subprocess.call(('open', QR_IMAGE_PATH))
             elif sys.platform.find('linux') >= 0: subprocess.call(('xdg-open', QR_IMAGE_PATH))
-            elif sys.platform.find('linux') >= 0: subprocess.call(('cmd', '/C', 'start', QR_IMAGE_PATH))
+            elif sys.platform.find('win32') >= 0: subprocess.call(('cmd', '/C', 'start', QR_IMAGE_PATH))
             else: os.startfile(QR_IMAGE_PATH)
 
     def get_user_id(self, name):
-        name = 'unknown'
         for m in self.member_list:
             if name == m['RemarkName'] or name == m['NickName']:
                 return m['UserName']

@@ -1,2 +1,6 @@
 *.pyc
-test/*
+*.jpg
+*.json
+test/
+tmp/*
+!tmp/.gitignore
