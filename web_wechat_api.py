@@ -59,7 +59,7 @@ def printf_msg(msg_type, format, content):
     if not DEBUG and msg_type == 'DEBUG': return
     if not isinstance(content, tuple):
         content = (content,)
-    print '[%s] ' % (msg_type,) + format % content
+    print '[%s] %s ' % (msg_type, time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())) + format % content
 
 def write_to_file(name, data, mode = 'wb'):
     with open(os.path.join(TEMP_PATH, name), mode) as f:
@@ -81,6 +81,7 @@ class WebWechatApi():
     member_list = []
     contact_list = []
     group_list = []
+    group_member_list = []
     special_user_list = []
     public_user_list = []
 
@@ -93,20 +94,26 @@ class WebWechatApi():
 
     def __init__(self):
         # create requests object
-        headers = {'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.125 Safari/537.36'}
+        headers = {
+            'User-agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2623.87 Safari/537.36',
+            'Referer': 'https://wx.qq.com/',
+            'Origin': 'https://wx.qq.com',
+            'Host': 'wx.qq.com',
+            'Connection': 'keep-alive'
+        }
         self.requests = requests.Session()
         self.requests.headers.update(headers)
         self.requests.mount('http://', requests.adapters.HTTPAdapter(max_retries = 5))
         self.requests.mount('https://', requests.adapters.HTTPAdapter(max_retries = 5))
 
     def _get(self, url, params = None, headers = None):
-        r = self.requests.get(url = url, params = params, headers = headers, cookies = self.cookies)
+        r = self.requests.get(url = url, params = params, headers = headers)
         r.encoding = 'utf-8'
         return r
 
-    def _post(self, url, data = None, headers = None, json = False):
+    def _post(self, url, data = None, headers = None, json_fmt = False):
         headers = {'content-type': 'application/json; charset=UTF-8'} if json else {}
-        r = self.requests.post(url = url, data = data, headers = headers, cookies = self.cookies)
+        r = self.requests.post(url = url, data = json.dumps(data), headers = headers) # json.dumps is important here
         r.encoding = 'utf-8'
         return r
 
@@ -191,10 +198,6 @@ class WebWechatApi():
                 'Skey': skey,
                 'DeviceID': DEVICE_ID,
             }
-            self.cookies = r.cookies
-
-            print_msg('DEBUG', 'Cookie:')
-            print r.cookies
 
             # close QR image and remove
             pass
@@ -224,7 +227,7 @@ class WebWechatApi():
             self.base_uri, self.pass_ticket, self.base_request['Skey'], int(time.time()))
         params = {'BaseRequest': self.base_request}
 
-        r = self._post(url = url, data = json.dumps(params), json = True)
+        r = self._post(url = url, data = params, json_fmt = True)
         data = r.json()
 
         state = self.response_state('webwxinit', data['BaseResponse'])
@@ -238,9 +241,7 @@ class WebWechatApi():
         self.user_info = data['User']
         self.sync_key = data['SyncKey']
 
-        # self._status_notify()
-
-        return self._init_contact()
+        return self._status_notify() and self._get_contact() and self._batch_get_contact()
 
     def _status_notify(self):
         url = '%s/webwxstatusnotify?&pass_ticket=%s' % (self.base_uri, self.pass_ticket)
@@ -251,16 +252,15 @@ class WebWechatApi():
             "ToUserName": self.user_info['UserName'],
             "ClientMsgId": int(time.time())
         }
-        data = self._post(url, params, json = True).json()
-        print data
+        data = self._post(url = url, data = params, json_fmt = True).json()
 
         return self.response_state('webwxstatusnotify', data['BaseResponse'])
 
-    def _init_contact(self):
+    def _get_contact(self):
         url = '%s/webwxgetcontact?pass_ticket=%s&skey=%s&r=%s' % (
             self.base_uri, self.pass_ticket, self.base_request['Skey'], int(time.time()))
 
-        r = self._post(url = url, json = True)
+        r = self._post(url = url, json_fmt = True)
         data = r.json()
 
         state = self.response_state('webwxgetcontact', data['BaseResponse'])
@@ -294,6 +294,42 @@ class WebWechatApi():
             write_to_file('webwxgetcontact_public.json', json.dumps(self.public_user_list, indent = 4))
 
         return True
+
+    def _batch_get_contact(self):
+        url = '%s/webwxbatchgetcontact?type=ex&r=%s&pass_ticket=%s' % (
+                self.base_uri, int(time.time()), self.pass_ticket)
+        params = {
+            'BaseRequest': self.base_request,
+            "Count": len(self.group_list),
+            "List": [{"UserName": g['UserName'], "EncryChatRoomId":""} for g in self.group_list]
+        }
+        
+        data = self._post(url = url, data = params, json_fmt = True).json()
+        state = self.response_state('webwxbatchgetcontact', data['BaseResponse'])
+        if not state:
+            return False
+
+        self.group_list = data['ContactList']
+        for g in self.group_list:
+            member_list = g['MemberList']
+            for m in member_list:
+                self.group_member_list.append(m)
+        return True
+
+    def _get_user_by_id(self, id):
+        url = '%s/webwxbatchgetcontact?type=ex&r=%s&pass_ticket=%s' % (
+                self.base_uri, int(time.time()), self.pass_ticket)
+        params = {
+            'BaseRequest': self.base_request,
+            "Count": 1,
+            "List": [{"UserName": id, "EncryChatRoomId": ""}]
+        }
+        data = self._post(url = url, data = params, json_fmt = True).json()
+        state = self.response_state('webwxbatchgetcontact', data['BaseResponse'])
+        if not state:
+            return False
+
+        return data['ContactList']
 
     def add_sync_listener(self, callback):
         self.sync_listener.append(callback)
@@ -361,7 +397,7 @@ class WebWechatApi():
             'rr': ~int(time.time()),
         }
 
-        r = self._post(url = url, data = json.dumps(params))
+        r = self._post(url = url, data = params, json_fmt = True)
         data = r.json()
         # print(data)
 
@@ -395,7 +431,7 @@ class WebWechatApi():
             }
         }
         params = json.dumps(params, ensure_ascii = False).encode('utf8')
-        data = self._post(url = url, data = params, json = True).json()
+        data = self._post(url = url, data = params, json_fmt = True).json()
         return self.response_state('webwxsendmsg', data['BaseResponse'])
 
     def logout(self):
@@ -404,7 +440,7 @@ class WebWechatApi():
             'sid': self.base_request['Sid'],
             'uin': self.base_request['Uin']
         }
-        self._post(url = url, data = params)
+        self._post(url = url, data = params, json_fmt = True)
         print_msg('INFO', 'logout')
 
 
@@ -427,7 +463,7 @@ class WebWechatApi():
             }
             data = self._get(url = url, params = params).content
 
-            self.write_to_file(QR_IMAGE_PATH, data)
+            write_to_file(QR_IMAGE_PATH, data)
             time.sleep(1)
 
             if sys.platform.find('darwin') >= 0: subprocess.call(('open', QR_IMAGE_PATH))
@@ -441,13 +477,30 @@ class WebWechatApi():
                 return m['UserName']
         return None
 
+    def _get_group_name(self, id):
+        for m in self.group_member_list:
+            if m['UserName'] == id:
+                return m['NickName']
+        
+        # not found
+        name = 'unknown'
+        group_list = self._get_user_by_id(id)
+        for g in group_list:
+            self.group_list.append(g)
+            if g['UserName'] == id:
+                name = g['NickName']
+                member_list = g['MemberList']
+                for m in member_list:
+                    self.group_member_list.append(m)
+        return name
+
     def get_user_remark_name(self, id):
         if id == self.user_info['UserName']: # self
             return self.user_info['NickName']
 
         if id[:2] == '@@': # group
             for m in self.group_list:
-                pass # need to handle
+                self._get_group_name(id)
         else:
             # contact
             for m in self.contact_list:
@@ -466,8 +519,8 @@ class WebWechatApi():
                     return m['RemarkName'] if m['RemarkName'] else m['NickName']
 
             # group member
-            # for m in self.group_member_list:
-            #     if m['UserName'] == id:
-            #         return m['DisplayName'] if m['DisplayName'] else m['NickName']
+            for m in self.group_member_list:
+                if m['UserName'] == id:
+                    return m['DisplayName'] if m['DisplayName'] else m['NickName']
 
         return 'unknown'
